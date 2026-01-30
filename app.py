@@ -1,128 +1,202 @@
+# ===============================
+# SMART PARKING & THEFT ALERT APP
+# ===============================
+
 import streamlit as st
+import cv2
 import numpy as np
-from PIL import Image
+import os
 from ultralytics import YOLO
 from twilio.rest import Client
+from PIL import Image
+import tempfile
 import time
 
-# ------------------ PAGE CONFIG ------------------
+# -------------------------------
+# STREAMLIT CONFIG
+# -------------------------------
 st.set_page_config(
     page_title="Smart Parking & Theft Alert System",
-    page_icon="🚗",
     layout="wide"
 )
 
 st.title("🚗 Smart Parking & Theft Alert System")
-st.write("YOLO-based vehicle monitoring with SMS & WhatsApp alerts")
 
-# ------------------ LOAD YOLO MODEL ------------------
+# -------------------------------
+# LOAD TWILIO SECRETS
+# -------------------------------
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM")  # whatsapp:+14155238886
+OWNER_WHATSAPP = os.getenv("OWNER_WHATSAPP")              # whatsapp:+91xxxxxxxxxx
+TWILIO_SMS_FROM = os.getenv("TWILIO_SMS_FROM")            # optional
+OWNER_SMS = os.getenv("OWNER_SMS")                        # optional
+
+if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM, OWNER_WHATSAPP]):
+    st.error("❌ Twilio secrets not loaded. Check Streamlit → Settings → Secrets.")
+    st.stop()
+
+client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+# -------------------------------
+# LOAD YOLO MODEL
+# -------------------------------
 @st.cache_resource
 def load_model():
-    return YOLO("yolov8n.pt")  # lightweight & fast
+    return YOLO("yolov8n.pt")  # lightweight, works on Streamlit Cloud
 
 model = load_model()
 
-# ------------------ TWILIO CLIENT ------------------
-client = Client(
-    st.secrets["TWILIO_ACCOUNT_SID"],
-    st.secrets["TWILIO_AUTH_TOKEN"]
-)
+# COCO classes considered suspicious near vehicles
+SUSPICIOUS_CLASSES = ["person", "knife", "scissors", "backpack"]
 
-# ------------------ ALERT FUNCTIONS ------------------
+# -------------------------------
+# ALERT FUNCTIONS
+# -------------------------------
 def send_whatsapp_alert(message):
-    try:
-        client.messages.create(
-            from_=st.secrets["TWILIO_WHATSAPP_FROM"],
-            to=st.secrets["OWNER_WHATSAPP"],
-            body=message
-        )
-        st.success("✅ WhatsApp alert sent")
-    except Exception as e:
-        st.error(f"❌ WhatsApp alert failed: {e}")
+    client.messages.create(
+        from_=TWILIO_WHATSAPP_FROM,
+        to=OWNER_WHATSAPP,
+        body=message
+    )
 
 def send_sms_alert(message):
-    try:
+    if TWILIO_SMS_FROM and OWNER_SMS:
         client.messages.create(
-            from_=st.secrets["TWILIO_SMS_FROM"],
-            to=st.secrets["OWNER_SMS"],
+            from_=TWILIO_SMS_FROM,
+            to=OWNER_SMS,
             body=message
         )
-        st.success("✅ SMS alert sent")
-    except Exception as e:
-        st.error(f"❌ SMS alert failed: {e}")
 
-# ------------------ FILE UPLOAD ------------------
-st.subheader("📤 Upload CCTV Image")
+# -------------------------------
+# SIDEBAR INPUTS
+# -------------------------------
+st.sidebar.header("⚙️ Configuration")
+
+owner_vehicle = st.sidebar.text_input(
+    "Owner Vehicle Number",
+    placeholder="TN09AB1234"
+)
+
+parking_type = st.sidebar.selectbox(
+    "Parking Area Type",
+    ["Authorized Parking Area", "Restricted / No Parking Area"]
+)
+
+alert_mode = st.sidebar.multiselect(
+    "Alert Mode",
+    ["WhatsApp", "SMS"],
+    default=["WhatsApp"]
+)
+
+monitor_time = st.sidebar.slider(
+    "Monitoring Duration (seconds)",
+    min_value=10,
+    max_value=120,
+    value=30
+)
+
+# -------------------------------
+# FILE UPLOAD
+# -------------------------------
 uploaded_file = st.file_uploader(
-    "Upload Image",
-    type=["jpg", "jpeg", "png"]
+    "📤 Upload CCTV Image or Video",
+    type=["jpg", "jpeg", "png", "mp4"]
 )
 
-owner_vehicle_number = st.text_input(
-    "Enter OWNER Vehicle Number (Example: TN09AB1234)"
-)
+# -------------------------------
+# DETECTION LOGIC
+# -------------------------------
+def detect_suspicious(frame):
+    results = model(frame, conf=0.4)
+    suspicious_found = False
 
-area_type = st.selectbox(
-    "Select Parking Area Type",
-    ["Normal Parking Area", "Restricted / No Parking Area"]
-)
+    for r in results:
+        for box in r.boxes:
+            cls_id = int(box.cls[0])
+            label = model.names[cls_id]
+            if label in SUSPICIOUS_CLASSES:
+                suspicious_found = True
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                cv2.putText(frame, label, (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-start = st.button("▶ Start Monitoring")
+    return suspicious_found, frame
 
-# ------------------ MAIN LOGIC ------------------
-if start and uploaded_file is not None and owner_vehicle_number != "":
+# -------------------------------
+# START MONITORING
+# -------------------------------
+if st.button("▶️ Start Monitoring"):
+
+    if uploaded_file is None:
+        st.warning("Please upload an image or video.")
+        st.stop()
+
     st.info("🔍 Monitoring started...")
-    
-    image = Image.open(uploaded_file).convert("RGB")
-    img_array = np.array(image)
 
-    results = model(img_array)
-    annotated_img = results[0].plot()
+    suspicious_detected = False
 
-    st.image(annotated_img, caption="Processed CCTV Image", use_column_width=True)
+    # ---------- IMAGE ----------
+    if uploaded_file.type.startswith("image"):
+        image = Image.open(uploaded_file)
+        frame = np.array(image)
 
-    detected_classes = results[0].boxes.cls.tolist()
-    class_names = results[0].names
+        suspicious_detected, output = detect_suspicious(frame)
+        st.image(output, caption="Processed Image", use_column_width=True)
 
-    vehicles_detected = [
-        class_names[int(cls)]
-        for cls in detected_classes
-        if class_names[int(cls)] in ["car", "motorcycle", "bus", "truck"]
-    ]
+    # ---------- VIDEO ----------
+    else:
+        tfile = tempfile.NamedTemporaryFile(delete=False)
+        tfile.write(uploaded_file.read())
 
-    st.write("### 🚘 Detected Vehicles:")
-    st.write(vehicles_detected if vehicles_detected else "No vehicles detected")
+        cap = cv2.VideoCapture(tfile.name)
+        start_time = time.time()
 
-    suspicious = False
-    reason = ""
+        frame_placeholder = st.empty()
 
-    if area_type == "Restricted / No Parking Area" and len(vehicles_detected) > 0:
-        suspicious = True
-        reason = "Vehicle detected in RESTRICTED area"
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-    if len(vehicles_detected) > 0:
-        suspicious = True
-        reason = "Vehicle movement detected near parking area"
+            suspicious, processed = detect_suspicious(frame)
+            if suspicious:
+                suspicious_detected = True
 
-    # ------------------ ALERT ------------------
-    if suspicious:
-        st.warning("⚠ Suspicious Activity Detected!")
+            frame_placeholder.image(processed, channels="BGR")
 
-        alert_message = f"""
-🚨 THEFT ALERT 🚨
+            if time.time() - start_time > monitor_time:
+                break
 
-Vehicle Number: {owner_vehicle_number}
-Reason: {reason}
-Time: {time.strftime('%Y-%m-%d %H:%M:%S')}
+        cap.release()
 
-Immediate action required!
+    # ---------------------------
+    # ALERT DECISION
+    # ---------------------------
+    if suspicious_detected or parking_type == "Restricted / No Parking Area":
+        alert_msg = f"""🚨 ALERT!
+Suspicious Activity Detected
+
+Vehicle: {owner_vehicle or 'Unknown'}
+Area: {parking_type}
+
+Immediate attention required.
 """
 
-        send_whatsapp_alert(alert_message)
-        send_sms_alert(alert_message)
+        if "WhatsApp" in alert_mode:
+            send_whatsapp_alert(alert_msg)
+
+        if "SMS" in alert_mode:
+            send_sms_alert(alert_msg)
+
+        st.error("🚨 Suspicious Activity Detected! Alert Sent.")
 
     else:
-        st.success("✅ No suspicious activity detected")
+        st.success("✅ No suspicious activity detected.")
 
-elif start:
-    st.error("❗ Please upload an image and enter vehicle number")
+# -------------------------------
+# FOOTER
+# -------------------------------
+st.markdown("---")
+st.caption("AI-based Smart Parking & Theft Detection System")
