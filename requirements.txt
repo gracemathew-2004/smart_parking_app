@@ -1,6 +1,7 @@
 streamlit
+numpy
 pillow
 twilio
 ultralytics
-torch
+pytesseract
 opencv-python-headless
