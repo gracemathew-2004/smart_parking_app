@@ -126,4 +126,4 @@ Immediate action required!
         st.success("✅ No suspicious activity detected")
 
 elif start:
-    st.error("❗ Please upload an image and enter vehicle number")V
+    st.error("❗ Please upload an image and enter vehicle number")
