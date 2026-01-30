@@ -1,6 +1,5 @@
-streamlit
-opencv-python
+streamlit==1.29.0
 numpy
 pillow
-ultralytics
+opencv-python-headless
 twilio
