@@ -2,101 +2,132 @@ import streamlit as st
 from PIL import Image
 import time
 from twilio.rest import Client
+from ultralytics import YOLO
 
 # ===============================
 # 🔐 TWILIO CONFIGURATION
 # ===============================
-# ❗ Replace with YOUR real values
 TWILIO_ACCOUNT_SID = "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 TWILIO_AUTH_TOKEN = "your_auth_token_here"
 
-# Twilio Sandbox WhatsApp number (DO NOT CHANGE)
-TWILIO_WHATSAPP_FROM = "whatsapp:+14155238886"
+TWILIO_WHATSAPP_FROM = "whatsapp:+14155238886"   # Twilio sandbox
+TWILIO_SMS_FROM = "+1XXXXXXXXXX"                 # Twilio SMS number
 
-# Your WhatsApp number (India example)
 OWNER_WHATSAPP = "whatsapp:+91XXXXXXXXXX"
+OWNER_SMS = "+91XXXXXXXXXX"
 
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
 # ===============================
-# 🚨 ALERT FUNCTION
+# 📲 ALERT FUNCTIONS
 # ===============================
 def send_whatsapp_alert(message):
-    try:
-        client.messages.create(
-            body=message,
-            from_=TWILIO_WHATSAPP_FROM,
-            to=OWNER_WHATSAPP
-        )
-        st.success("📲 WhatsApp Alert Sent Successfully!")
-    except Exception as e:
-        st.error(f"WhatsApp Alert Failed: {e}")
+    client.messages.create(
+        body=message,
+        from_=TWILIO_WHATSAPP_FROM,
+        to=OWNER_WHATSAPP
+    )
+
+def send_sms_alert(message):
+    client.messages.create(
+        body=message,
+        from_=TWILIO_SMS_FROM,
+        to=OWNER_SMS
+    )
 
 # ===============================
-# 🧠 DUMMY SUSPICIOUS ACTIVITY LOGIC
-# (Replace later with ML model)
+# 🧠 LOAD YOLO MODEL
 # ===============================
-def detect_suspicious_activity(image):
-    # ⚠️ DEMO LOGIC
-    # Assume every uploaded image is suspicious
-    time.sleep(2)
-    return True
+@st.cache_resource
+def load_model():
+    return YOLO("yolov8n.pt")   # lightweight YOLO model
+
+model = load_model()
+
+# ===============================
+# 🔍 THEFT DETECTION LOGIC
+# ===============================
+def detect_theft(image):
+    results = model(image)
+
+    detected_objects = []
+    for r in results:
+        for box in r.boxes:
+            cls = int(box.cls[0])
+            label = model.names[cls]
+            detected_objects.append(label)
+
+    # 🚨 Simple theft logic
+    suspicious_objects = ["person", "knife", "scissors", "backpack"]
+
+    for obj in detected_objects:
+        if obj in suspicious_objects:
+            return True, detected_objects
+
+    return False, detected_objects
 
 # ===============================
 # 🎨 STREAMLIT UI
 # ===============================
 st.set_page_config(page_title="Smart Parking & Theft Alert", layout="centered")
 
-st.title("🚗 Smart Parking & Theft Alert System")
-st.write("Upload CCTV image to detect suspicious activity and send alert")
+st.title("🚗 Smart Parking & Theft Alert System (ML Powered)")
+st.caption("YOLO-based theft detection with SMS & WhatsApp alerts")
 
-# ===============================
-# 📤 FILE UPLOAD
-# ===============================
 uploaded_file = st.file_uploader(
-    "Upload CCTV Image",
+    "📤 Upload CCTV Image",
     type=["jpg", "jpeg", "png"]
 )
 
 vehicle_number = st.text_input(
-    "Enter Owner Vehicle Number (Example: TN09AB1234)"
+    "🚘 Owner Vehicle Number (Example: TN09AB1234)"
 )
 
 parking_type = st.selectbox(
-    "Select Parking Area Type",
+    "🅿️ Parking Area Type",
     ["Restricted / No Parking Area", "Authorized Parking Area"]
 )
 
-start_monitoring = st.button("🚨 Start Monitoring")
+start = st.button("🚨 Start Monitoring")
 
 # ===============================
-# 🔍 MAIN LOGIC
+# 🚀 MAIN PIPELINE
 # ===============================
-if uploaded_file is not None and start_monitoring:
+if start:
+
+    if uploaded_file is None:
+        st.warning("Please upload a CCTV image.")
+        st.stop()
 
     image = Image.open(uploaded_file)
     st.image(image, caption="Uploaded CCTV Image", use_column_width=True)
 
-    st.info("🔍 Monitoring started...")
+    with st.spinner("🔍 Analyzing image using YOLO..."):
+        time.sleep(2)
+        suspicious, objects = detect_theft(image)
 
-    suspicious = detect_suspicious_activity(image)
+    st.write("### 🔎 Detected Objects:")
+    st.write(objects)
 
     if suspicious:
-        st.error("⚠️ Suspicious Activity Detected!")
+        st.error("🚨 THEFT / SUSPICIOUS ACTIVITY DETECTED!")
 
-        alert_message = f"""
-🚨 ALERT: Suspicious Activity Detected!
+        alert_msg = f"""
+🚨 SMART PARKING ALERT 🚨
+
+Suspicious Activity Detected!
 
 Vehicle Number: {vehicle_number}
 Parking Area: {parking_type}
+Detected Objects: {objects}
 
-Please check immediately.
+Please take immediate action.
         """
 
-        send_whatsapp_alert(alert_message)
+        send_whatsapp_alert(alert_msg)
+        send_sms_alert(alert_msg)
+
+        st.success("📲 Alert sent via WhatsApp & SMS")
 
     else:
-        st.success("✅ No suspicious activity detected.")
-
-elif start_monitoring and uploaded_file is None:
-    st.warning("Please upload an image before starting monitoring.")
+        st.success("✅ No suspicious activity detected")
